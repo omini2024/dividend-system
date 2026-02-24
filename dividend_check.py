@@ -3,14 +3,47 @@
 # ==============================
 
 import yfinance as yf
+from datetime import datetime
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime
 import os
+# ===== メール通知 =====
+import smtplib
+from email.mime.text import MIMEText
+from email_config import EMAIL_ADDRESS, EMAIL_PASSWORD
+
+def send_alert(subject, body):
+    print("send_alert called")
+
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    from email_config import SMTP_SERVER, SMTP_PORT, EMAIL_ADDRESS, EMAIL_PASSWORD, TO_EMAIL
+
+    msg = MIMEMultipart()
+    msg["From"] = EMAIL_ADDRESS
+    msg["To"] = TO_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    print("SMTP connect...")
+    server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+    server.starttls()
+
+    print("SMTP login...")
+    server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+
+    print("SMTP send...")
+    server.send_message(msg)
+    server.quit()
+
+    print("SMTP send OK")
 
 # ========= 設定 =========
 YEARS = 15
-JPX_FILE = "data_j.xlsx"
+JPX_FILE = "/home/kageta/projects/dividend_project/dividend-system/data_j.xlsx"
 OUTPUT_DIR = "output"
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "final_result.xlsx")
 
@@ -138,3 +171,102 @@ with pd.ExcelWriter(OUTPUT_FILE, engine="openpyxl") as writer:
 print("Excel created:", OUTPUT_FILE)
 print("AllCandidates:", len(df_all))
 print("Final7:", len(df_final))
+send_alert(
+    "【配当システム】本日の監視結果",
+    f"Final7 が {len(df_final)} 銘柄抽出されました。\n\n{df_final[['ティッカー','会社名']].to_string(index=False)}"
+)
+def one_year_return(ticker, year):
+    try:
+        start = f"{year}-01-01"
+        end = f"{year+1}-01-01"
+
+        df = yf.download(ticker, start=start, end=end, progress=False)
+
+        if df.empty:
+            return None
+
+        # MultiIndex対策
+        if isinstance(df.columns, tuple) or hasattr(df.columns, "levels"):
+            df.columns = df.columns.get_level_values(0)
+
+        start_price = df["Close"].iloc[0]
+        end_price = df["Close"].iloc[-1]
+
+        return (end_price / start_price) - 1
+
+    except:
+        return None
+    
+def select_final7(df):
+    df = df.sort_values("総合点", ascending=False)
+
+    selected = []
+    sector_count = {}
+
+    for _, row in df.iterrows():
+        sector = row["業種"]
+
+        if sector_count.get(sector, 0) < 2:
+            selected.append(row)
+            sector_count[sector] = sector_count.get(sector, 0) + 1
+
+        if len(selected) == 7:
+            break
+
+    return pd.DataFrame(selected)
+
+def run_backtest(df_out, start_year=2014, end_year=2023):
+
+    results = []
+
+    for year in range(start_year, end_year + 1):
+        print(f"Backtesting {year}...")
+
+        final7 = select_final7(df_out)
+
+        yearly_returns = []
+
+        for t in final7["ティッカー"]:
+            r = one_year_return(t, year)
+            if r is not None:
+                yearly_returns.append(r)
+
+        if len(yearly_returns) > 0:
+            avg_return = sum(yearly_returns) / len(yearly_returns)
+        else:
+            avg_return = None
+
+        results.append({
+            "Year": year,
+            "Average Return": avg_return
+        })
+
+    return pd.DataFrame(results)
+
+print("Running Backtest...")
+
+bt_df = run_backtest(df_all)
+
+cagr = ((1 + bt_df["Average Return"]).prod()) ** (1 / len(bt_df)) - 1
+
+print("strategy CAGR:", round(cagr * 100, 2), "%")
+
+cum = (1 + bt_df["Average Return"]).cumprod()
+drawdown = cum / cum.cummax() - 1
+
+print("\n=== Backtest Result ===")
+print("CAGR:", round(cagr * 100, 2), "%")
+print("Max Drawdown:", round(drawdown.min() * 100, 2), "%")
+
+import matplotlib.pyplot as plt
+
+bt_df.plot(x="Year", y="Average Return", kind="bar", title="Yearly Average Return")
+plt.tight_layout()
+plt.savefig("output/backtest_bar.png")
+plt.close()
+
+print("=== BEFORE SEND ALERT ===")
+send_alert("テスト送信", "dividend_check.py からのテストです")
+print("=== AFTER SEND ALERT ===")
+print("### MAIL TEST START ###")
+raise SystemExit("STOP HERE")
