@@ -4,3 +4,12 @@ output/
 *.xlsx
 *.png
 .DS_Store
+venv/
+.venv/
+__pycache__/
+output/
+*.xlsx
+*.pyc
+email_config.py
+monthly_log.txt
+_backup/
