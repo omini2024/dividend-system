@@ -13,3 +13,4 @@ output/
 email_config.py
 monthly_log.txt
 _backup/
+*.ipynb
