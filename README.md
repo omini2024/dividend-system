@@ -65,14 +65,6 @@ pip install yfinance pandas openpyxl tqdm
 ### 4. email_config.py の作成（メール通知を使う場合）
 プロジェクトフォルダに `email_config.py` を新規作成して以下を記入：
 
-```python
-SMTP_SERVER  = "smtp.gmail.com"   # Gmailの場合
-SMTP_PORT    = 587
-EMAIL_ADDRESS = "your_address@gmail.com"   # 送信元アドレス
-EMAIL_PASSWORD = "xxxx xxxx xxxx xxxx"     # Gmailアプリパスワード
-TO_EMAIL     = "your_address@gmail.com"    # 送信先（自分宛でOK）
-```
-
 > **Gmailアプリパスワードの取得方法**
 > 1. Googleアカウント → セキュリティ → 2段階認証をONにする
 > 2. 「アプリパスワード」を検索 → 新しいパスワードを生成
