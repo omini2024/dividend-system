@@ -77,11 +77,16 @@ pip install yfinance pandas openpyxl tqdm
 直前5営業日の終値を取得。
 　配当性向の３年平均化
 異常値が出た銘柄を別枠に纏める(DataCheck_要確認) 
+### 6. 株式分割及びDOE
+直近3ヶ月以内の株式分割を検出し「要確認」フラグを付与
+安定性スコア計算時に分割逆換算を適用
+総合点を90点→100点満点に変更【C案】
+DOE・理論利回り・実質PBR倍率を算出・出力
 ---
 
 ## 🚀 実行方法
 
-### 年1回（4月1日推奨 ※休日の場合は翌営業日）
+### 年1回（5月ゴールデンウイーク後を推奨）
 ```bash
 python annual_select.py
 ```
@@ -114,8 +119,8 @@ python monthly_monitor.py
 ## 📅 推奨運用カレンダー
 
 ```
-4月1日  → annual_select.py を実行（年次選定・株購入判断）
+5月golden week後  → annual_select.py を実行（年次選定・株購入判断）
 毎月末  → monthly_monitor.py を実行（月次監視）
 アラート → メールを確認してアクションを検討
-翌年4月 → annual_select.py を再実行（リスト更新）
+翌年5月1日 → annual_select.py を再実行（リスト更新）
 ```
