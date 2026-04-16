@@ -1,3 +1,6 @@
+
+コピー
+
 # ==============================
 # 【年1回実行】長期安定配当株 メイン選定スクリプト（Dモデル・本格版）
 # 実行タイミング：年1回（毎年4月1日 ※休日の場合は翌営業日）
@@ -29,6 +32,7 @@ from tqdm import tqdm
 import os
 import json
 import numpy as np
+import jquantsapi
  
 try:
     from email_config import SMTP_SERVER, SMTP_PORT, EMAIL_ADDRESS, EMAIL_PASSWORD, TO_EMAIL
@@ -44,6 +48,7 @@ JPX_FILE   = "data_j.xlsx"
 OUTPUT_DIR = "output"
 ANNUAL_RESULT_FILE = os.path.join(OUTPUT_DIR, "annual_result.xlsx")
 FINAL7_JSON        = os.path.join(OUTPUT_DIR, "final7.json")
+JQUANTS_API_KEY    = "ここにAPIキーを設定"  # J-Quants APIキー
  
 os.makedirs(OUTPUT_DIR, exist_ok=True)
  
@@ -155,22 +160,48 @@ def get_multi_year_financials(stock, avg_years):
  
  
 # ============================================================
-# 【改良5】株式分割検出
-# 直近SPLIT_WATCH_MONTHS ヶ月以内に分割が発生した場合、
-# 配当履歴・株価の調整タイミングがズレてデータが歪む可能性があるため
-# 「要確認」フラグを立てる。
+# 【改良5】株式分割検出（J-Quants版）
+# yfinanceの分割データは異常値（極小値）が混入するケースがあるため
+# J-Quants APIの公式データ（AdjFactor）で代替する。
+# AdjFactorは権利落ち日に「1/分割比率」が記録される。
+# 例）3分割 → 0.333333、5分割 → 0.2
+# 上場廃止銘柄はJ-Quantsで取得できないため、その場合はyfinanceにフォールバック。
 # ============================================================
 SPLIT_WATCH_MONTHS = 3    # 何ヶ月以内の分割を警戒対象にするか
-# ※ yfinanceの配当・株価の遡及調整ラグは通常数日〜数週間。
-#    年1回実行のため「前回実行後に起きた分割」は全て拾いたいが、
-#    過剰に広くすると正常調整済みの銘柄に誤フラグが増える。
-#    3ヶ月はラグを十分カバーしつつ誤検知を抑える実用的な値。
+ 
+# J-Quantsクライアントを初期化（グローバルで1回だけ）
+try:
+    _jquants_client = jquantsapi.ClientV2(api_key=JQUANTS_API_KEY)
+except Exception:
+    _jquants_client = None
  
 def check_recent_split(stock, months=SPLIT_WATCH_MONTHS):
     """
     直近 months ヶ月以内に株式分割があれば (True, 分割比率の文字列) を返す。
     なければ (False, "") を返す。
+    J-QuantsのAdjFactorを優先使用し、取得失敗時はyfinanceにフォールバック。
     """
+    # --- J-Quants版（優先） ---
+    if _jquants_client is not None:
+        try:
+            code = stock.ticker.replace(".T", "")
+            df = _jquants_client.get_eq_bars_daily(code=code)
+            if df is not None and not df.empty:
+                df['Date'] = pd.to_datetime(df['Date'])
+                cutoff = pd.Timestamp.now() - pd.DateOffset(months=months)
+                recent = df[df['Date'] >= cutoff]
+                split_rows = recent[recent['AdjFactor'] != 1.0]
+                if not split_rows.empty:
+                    notes = []
+                    for _, row in split_rows.iterrows():
+                        ratio = round(1.0 / row['AdjFactor'], 1)
+                        notes.append(f"{ratio:.1f}倍({row['Date'].strftime('%Y-%m-%d')})")
+                    return True, " / ".join(notes)
+                return False, ""
+        except Exception:
+            pass
+ 
+    # --- yfinanceフォールバック ---
     try:
         splits = stock.splits
         if splits.empty:
@@ -179,34 +210,17 @@ def check_recent_split(stock, months=SPLIT_WATCH_MONTHS):
         recent = splits[splits.index >= cutoff]
         if recent.empty:
             return False, ""
-        # 直近の分割比率をまとめて文字列化（例: "2.0倍(2026-04-01)"）
         notes = []
         for dt, ratio in recent.items():
+            if ratio < 0.01:
+                continue
             notes.append(f"{ratio:.1f}倍({dt.strftime('%Y-%m-%d')})")
+        if not notes:
+            return False, ""
         return True, " / ".join(notes)
     except Exception:
         return False, ""
  
- 
-# ============================================================
-# 【改良6】分割逆換算：yearly_div を「分割前の1株あたり配当」に統一
-#
-# 背景：
-#   yfinanceは過去の配当を「分割後株数ベース」に遡及調整して返す。
-#   例）2分割後に取得すると、過去の配当は全て ÷2 された値になる。
-#   この状態でそのまま前年比を計算すると、分割年の前後で配当額が
-#   急変して見え、calc_dividend_stability() が増配を「減配」と
-#   誤判定するリスクがある。
-#
-# 対処：
-#   stock.splits から累積分割比率を年ごとに計算し、
-#   各年の配当に乗じて「分割調整前の名目1株配当」に戻す。
-#   これにより増配・減配の前年比が正しく評価できる。
-#
-# 注意：
-#   利回り計算（改良2）は「現在の株価 vs 現在の1株配当」の比較なので
-#   逆換算は不要。安定性スコア専用で使用する。
-# ============================================================
 def normalize_div_for_stability(yearly_div: dict, stock) -> dict:
     """
     yearly_div（yfinance調整済み）を分割前名目ベースに逆換算して返す。
@@ -547,6 +561,3 @@ body = (
 )
 send_alert(f"【配当システム】{fiscal_year}年度 年次選定結果", body)
 print("\n完了。")
- 
- 
- 
