@@ -1,6 +1,3 @@
-
-コピー
-
 # ==============================
 # 【年1回実行】長期安定配当株 メイン選定スクリプト（Dモデル・本格版）
 # 実行タイミング：年1回（毎年4月1日 ※休日の場合は翌営業日）
@@ -48,7 +45,7 @@ JPX_FILE   = "data_j.xlsx"
 OUTPUT_DIR = "output"
 ANNUAL_RESULT_FILE = os.path.join(OUTPUT_DIR, "annual_result.xlsx")
 FINAL7_JSON        = os.path.join(OUTPUT_DIR, "final7.json")
-JQUANTS_API_KEY    = "ここにAPIキーを設定"  # J-Quants APIキー
+JQUANTS_API_KEY    = "RtZSrXhB8a2ytDc-iT-Q1zFNz0II1rSj8f9wfREEvrc"  # J-Quants APIキー
  
 os.makedirs(OUTPUT_DIR, exist_ok=True)
  
@@ -411,6 +408,11 @@ for t in tqdm(tickers, desc="スキャン中"):
         if payout > 200 or payout < 0:
             quality_notes.append(f"配当性向異常値({payout:.1f}%)")
             payout = 0.0
+
+        # --- ROE・配当性向が両方0（取得失敗）の場合は要確認に格下げ ---
+        if roe == 0.0 and payout == 0.0:
+            data_quality = "要確認"
+            quality_notes.append("ROE・配当性向取得失敗")
  
         growth = (info.get("revenueGrowth") or 0) * 100
         debt   =  info.get("debtToEquity")  or 0
@@ -439,9 +441,11 @@ for t in tqdm(tickers, desc="スキャン中"):
             pbr_ratio = 0.0
  
         # スコアリング（各指標0〜10点）
+        # ※ payout・roeが0（取得失敗）の場合はスコアも0にする
+        #   （reverse=True指標で0が満点扱いになる不具合を防ぐ）
         yield_score     = calc_score(dividend_yield, 1.0,   6.0)
-        payout_score    = calc_score(payout,        20.0,  80.0, reverse=True)
-        roe_score       = calc_score(roe,            3.0,  20.0)
+        payout_score    = calc_score(payout,        20.0,  80.0, reverse=True) if payout > 0 else 0.0
+        roe_score       = calc_score(roe,            3.0,  20.0)               if roe    > 0 else 0.0
         growth_score    = calc_score(growth,        -5.0,  15.0)
         debt_score      = calc_score(debt,           0.0, 300.0, reverse=True)
  
@@ -561,3 +565,4 @@ body = (
 )
 send_alert(f"【配当システム】{fiscal_year}年度 年次選定結果", body)
 print("\n完了。")
+ 
