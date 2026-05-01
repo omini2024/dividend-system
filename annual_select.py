@@ -87,10 +87,13 @@ def send_alert(subject, body):
 # ============================================================
 def get_current_price(stock):
     try:
-        hist = stock.history(period="5d")
+        hist = stock.history(period="1mo")
         if hist.empty:
             return None
-        return float(hist["Close"].iloc[-1])
+        closes = hist["Close"].dropna()
+        if closes.empty:
+            return None
+        return float(closes.iloc[-1])
     except Exception:
         return None
  
@@ -361,25 +364,43 @@ for t in tqdm(tickers, desc="スキャン中"):
  
         # --- 【改良1】株価を履歴データから自前取得 ---
         current_price = get_current_price(stock)
-        if current_price is None:
-            current_price = info.get("currentPrice") or 0
- 
+        if current_price is None or current_price <= 0:
+            for _key in ["currentPrice", "regularMarketPrice", "ask"]:
+                _v = info.get(_key)
+                if _v and float(_v) > 0:
+                    current_price = float(_v)
+                    break
+            else:
+                current_price = 0
+
         # --- 【改良2】配当利回りを直近3年平均配当で計算 ---
         avg_div_years  = [fiscal_year - 1 - i for i in range(AVG_YEARS)]
         avg_div_values = [yearly_div[y] for y in avg_div_years if yearly_div.get(y, 0) > 0]
         last_year_div  = yearly_div.get(fiscal_year - 1, 0)  # 前年確定値（表示用）
- 
-        if avg_div_values and current_price > 0:
-            avg_div        = sum(avg_div_values) / len(avg_div_values)
-            dividend_yield = (avg_div / current_price) * 100
-        elif current_price > 0 and last_year_div > 0:
-            dividend_yield = (last_year_div / current_price) * 100
-        else:
-            dividend_yield = (info.get("dividendYield") or 0) * 100
- 
+
         # --- 【改良4】異常値フラグ（continueで除外しない） ---
         data_quality  = "正常"
         quality_notes = []
+
+        if avg_div_values and current_price > 0:
+            avg_div = sum(avg_div_values) / len(avg_div_values)
+            if avg_div > current_price:
+                # 配当 > 株価は物理的にあり得ない → dividendsデータ破損
+                data_quality = "要確認"
+                quality_notes.append(f"配当データ異常({avg_div:.0f}円)")
+                dividend_yield = 0.0
+            else:
+                dividend_yield = (avg_div / current_price) * 100
+        elif current_price > 0 and last_year_div > 0:
+            if last_year_div > current_price:
+                data_quality = "要確認"
+                quality_notes.append(f"配当データ異常({last_year_div:.0f}円)")
+                dividend_yield = 0.0
+            else:
+                dividend_yield = (last_year_div / current_price) * 100
+        else:
+            # info["dividendYield"]は信頼性が低いため使用しない
+            dividend_yield = 0.0
  
         if dividend_yield <= 0 or dividend_yield > 15.0:
             data_quality = "要確認"
@@ -408,11 +429,6 @@ for t in tqdm(tickers, desc="スキャン中"):
         if payout > 200 or payout < 0:
             quality_notes.append(f"配当性向異常値({payout:.1f}%)")
             payout = 0.0
-
-        # --- ROE・配当性向が両方0（取得失敗）の場合は要確認に格下げ ---
-        if roe == 0.0 and payout == 0.0:
-            data_quality = "要確認"
-            quality_notes.append("ROE・配当性向取得失敗")
  
         growth = (info.get("revenueGrowth") or 0) * 100
         debt   =  info.get("debtToEquity")  or 0
@@ -441,11 +457,9 @@ for t in tqdm(tickers, desc="スキャン中"):
             pbr_ratio = 0.0
  
         # スコアリング（各指標0〜10点）
-        # ※ payout・roeが0（取得失敗）の場合はスコアも0にする
-        #   （reverse=True指標で0が満点扱いになる不具合を防ぐ）
         yield_score     = calc_score(dividend_yield, 1.0,   6.0)
-        payout_score    = calc_score(payout,        20.0,  80.0, reverse=True) if payout > 0 else 0.0
-        roe_score       = calc_score(roe,            3.0,  20.0)               if roe    > 0 else 0.0
+        payout_score    = calc_score(payout,        20.0,  80.0, reverse=True)
+        roe_score       = calc_score(roe,            3.0,  20.0)
         growth_score    = calc_score(growth,        -5.0,  15.0)
         debt_score      = calc_score(debt,           0.0, 300.0, reverse=True)
  
@@ -566,3 +580,4 @@ body = (
 send_alert(f"【配当システム】{fiscal_year}年度 年次選定結果", body)
 print("\n完了。")
  
+
