@@ -20,6 +20,9 @@
 #         実質PBR倍率=DOE/現実利回り（2倍超は成長期待先行銘柄の目安）
 #         利回り×2.5（+0.5）、配当性向×2.0（+0.5）で利回り・持続性を強化
 #         安定性・ROE・成長・財務は据え置き
+# 改良9: Isolation Forest異常検知結果をExcel Final7シートに色付き警告表示
+#         anomaly_flag=-1の銘柄セルを黄色背景・太字でハイライト
+#         monthly連続異常（2回連続score≤-0.5）でexclusion_candidate=trueをJSON付与
 # ==============================
  
 import yfinance as yf
@@ -30,6 +33,12 @@ import os
 import json
 import numpy as np
 import jquantsapi
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.preprocessing import RobustScaler
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+from openpyxl.styles import PatternFill, Font
+from openpyxl.utils import get_column_letter
  
 try:
     from email_config import SMTP_SERVER, SMTP_PORT, EMAIL_ADDRESS, EMAIL_PASSWORD, TO_EMAIL
@@ -48,6 +57,23 @@ FINAL7_JSON        = os.path.join(OUTPUT_DIR, "final7.json")
 JQUANTS_API_KEY    = "RtZSrXhB8a2ytDc-iT-Q1zFNz0II1rSj8f9wfREEvrc"  # J-Quants APIキー
  
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ========= ML設定 =========
+# Isolation Forestで使用する特徴量
+ANOMALY_FEATURES = [
+    "利回り%(3年平均)",
+    "配当性向%(複数年平均)",
+    "ROE%(複数年平均)",
+    "DOE%",
+    "PBR",
+    "理論利回り%",
+    "実質PBR倍率",
+    "売上成長率%",
+    "負債比率",
+]
+ANOMALY_CONTAMINATION = 0.05   # 異常の想定割合（5%）
+FEATURE_IMPORTANCE_OUT = os.path.join(OUTPUT_DIR, "feature_importance.png")
+EXPORT_FEATURE_IMPORTANCE = True   # Falseにすると重要度PNG出力をスキップ
  
 today = datetime.today()
  
@@ -306,6 +332,116 @@ def calc_score(value, low, high, reverse=False):
     return round(max(0.0, min(10.0, score)), 2)
  
  
+# ============================================================
+# 【追加】Isolation Forest による異常検知
+# 対象：データ品質「正常」銘柄のみ
+# 出力列：anomaly_flag（-1=異常, 1=正常）、anomaly_score（低いほど異常度高）
+#         anomaly_reason（スコアが低い主因列を列挙）
+# ============================================================
+def detect_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["anomaly_flag"]   = 0
+    df["anomaly_score"]  = 0.0
+    df["anomaly_reason"] = ""
+
+    target = df[df["データ品質"] == "正常"].copy()
+    if len(target) < 10:
+        print("⚠️  異常検知: 正常銘柄が少なすぎるためスキップ")
+        return df
+
+    # 使用可能な列のみに絞る（全NaN列を除外）
+    use_cols = [c for c in ANOMALY_FEATURES if c in target.columns
+                and target[c].notna().sum() > 0]
+    X_raw = target[use_cols].fillna(0)
+
+    # RobustScaler（外れ値に強い正規化）
+    scaler = RobustScaler()
+    X_scaled = scaler.fit_transform(X_raw)
+
+    iso = IsolationForest(
+        n_estimators=300,
+        contamination=ANOMALY_CONTAMINATION,
+        random_state=42,
+        n_jobs=-1,
+    )
+    flags  = iso.fit_predict(X_scaled)   # -1 or 1
+    scores = iso.score_samples(X_scaled) # 低いほど異常
+
+    df.loc[target.index, "anomaly_flag"]  = flags
+    df.loc[target.index, "anomaly_score"] = np.round(scores, 4)
+
+    # 異常銘柄に対して「どの列が外れているか」を簡易列挙
+    X_scaled_df = pd.DataFrame(X_scaled, index=target.index, columns=use_cols)
+    anomaly_idx = target.index[flags == -1]
+    for idx in anomaly_idx:
+        row_abs = X_scaled_df.loc[idx].abs()
+        top = row_abs.nlargest(3).index.tolist()
+        df.loc[idx, "anomaly_reason"] = " / ".join(top)
+
+    n_anomaly = int((flags == -1).sum())
+    print(f"✅  異常検知完了: {n_anomaly} 銘柄を異常判定 (全{len(target)}社中)")
+    return df
+
+
+# ============================================================
+# 【追加】RandomForest による特徴量重要度の可視化
+# ラベル：総合点上位30%を1、下位30%を0として疑似ラベル生成
+# （教師あり学習のラベルがなくても重要度の傾向を把握できる）
+# ============================================================
+def export_feature_importance(df: pd.DataFrame) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
+
+        target = df[df["データ品質"] == "正常"].copy()
+        use_cols = [c for c in ANOMALY_FEATURES if c in target.columns
+                    and target[c].notna().sum() > 0]
+        if len(target) < 20 or len(use_cols) < 3:
+            print("⚠️  特徴量重要度: データ不足のためスキップ")
+            return
+
+        X = target[use_cols].fillna(0)
+        threshold_high = target["総合点"].quantile(0.70)
+        threshold_low  = target["総合点"].quantile(0.30)
+        mask = (target["総合点"] >= threshold_high) | (target["総合点"] <= threshold_low)
+        X_sub = X[mask]
+        y_sub = (target.loc[mask, "総合点"] >= threshold_high).astype(int)
+
+        if y_sub.sum() < 5 or (len(y_sub) - y_sub.sum()) < 5:
+            print("⚠️  特徴量重要度: ラベル偏りのためスキップ")
+            return
+
+        rf = RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1)
+        rf.fit(X_sub, y_sub)
+
+        importances = pd.Series(rf.feature_importances_, index=use_cols).sort_values()
+
+        # 日本語フォント設定（IPAGothicを優先）
+        jp_fonts = [f.name for f in fm.fontManager.ttflist
+                    if any(k in f.name for k in ["IPAGothic", "Noto", "Hiragino", "Yu Gothic"])]
+        if jp_fonts:
+            plt.rcParams["font.family"] = jp_fonts[0]
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        colors = ["#d9534f" if imp >= importances.quantile(0.67)
+                  else "#5bc0de" if imp >= importances.quantile(0.33)
+                  else "#aaaaaa" for imp in importances]
+        importances.plot(kind="barh", ax=ax, color=colors)
+        ax.set_title(f"特徴量重要度（{fiscal_year}年度）", fontsize=13)
+        ax.set_xlabel("重要度")
+        ax.axvline(importances.mean(), color="gray", linestyle="--", linewidth=0.8, label="平均")
+        ax.legend(fontsize=9)
+        plt.tight_layout()
+        plt.savefig(FEATURE_IMPORTANCE_OUT, dpi=150)
+        plt.close()
+        print(f"✅  特徴量重要度PNG出力: {FEATURE_IMPORTANCE_OUT}")
+
+    except Exception as e:
+        print(f"⚠️  特徴量重要度出力エラー: {e}")
+
+
 # ========= Final7選定 =========
 def select_final7(df):
     """
@@ -525,12 +661,27 @@ df_all = pd.DataFrame(rows)
 if df_all.empty:
     print("⚠️  候補銘柄が0件です。JPXファイルやネット接続を確認してください。")
     exit()
+
+# ==============================
+# 【追加】異常検知 & 特徴量重要度
+# ==============================
+print("\n異常検知を実行中...")
+df_all = detect_anomalies(df_all)
+
+if EXPORT_FEATURE_IMPORTANCE:
+    print("特徴量重要度を分析中...")
+    export_feature_importance(df_all)
  
 df_final = select_final7(df_all)
 df_check = df_all[df_all["データ品質"] == "要確認"].sort_values("総合点", ascending=False)
- 
+
+# 異常検知結果（正常銘柄の中でフラグ=-1のもの）
+df_anomaly = df_all[
+    (df_all["データ品質"] == "正常") & (df_all["anomaly_flag"] == -1)
+].sort_values("anomaly_score", ascending=True)
+
 # ==============================
-# Excel出力（3シート構成）
+# Excel出力（4シート構成）
 # ==============================
 with pd.ExcelWriter(ANNUAL_RESULT_FILE, engine="openpyxl") as writer:
     df_final.to_excel(
@@ -541,7 +692,35 @@ with pd.ExcelWriter(ANNUAL_RESULT_FILE, engine="openpyxl") as writer:
     ).to_excel(writer, index=False, sheet_name="AllCandidates")
     if not df_check.empty:
         df_check.to_excel(writer, index=False, sheet_name="DataCheck_要確認")
- 
+    if not df_anomaly.empty:
+        anomaly_cols = [
+            "ティッカー", "会社名", "業種",
+            "利回り%(3年平均)", "配当性向%(複数年平均)", "ROE%(複数年平均)",
+            "DOE%", "PBR", "理論利回り%", "実質PBR倍率",
+            "売上成長率%", "負債比率", "総合点",
+            "anomaly_score", "anomaly_reason",
+        ]
+        out_cols = [c for c in anomaly_cols if c in df_anomaly.columns]
+        df_anomaly[out_cols].to_excel(writer, index=False, sheet_name="AnomalyReport")
+
+# ==============================
+# 【改良9】Final7シート：異常銘柄を黄色背景・赤太字でハイライト
+# ==============================
+if "anomaly_flag" in df_final.columns and df_final["anomaly_flag"].eq(-1).any():
+    from openpyxl import load_workbook
+    wb = load_workbook(ANNUAL_RESULT_FILE)
+    ws = wb["Final7"]
+    WARN_FILL = PatternFill(fill_type="solid", fgColor="FFFF00")
+    headers = {cell.value: cell.column for cell in ws[1]}
+    flag_col = headers.get("anomaly_flag")
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        if flag_col and row[flag_col - 1].value == -1:
+            for cell in row:
+                cell.fill = WARN_FILL
+                cell.font = Font(bold=True, color="CC0000")
+    wb.save(ANNUAL_RESULT_FILE)
+    print("⚠️  Final7シート：異常銘柄を黄色警告表示しました")
+
 # ==============================
 # Final7をJSONに保存
 # ==============================
@@ -558,26 +737,47 @@ with open(FINAL7_JSON, "w", encoding="utf-8") as f:
 # ==============================
 print("\n" + "=" * 60)
 print(f"【年次選定完了】{today.strftime('%Y年%m月%d日')}")
-print(f"全候補: {len(df_all)} 社  /  Final7: {len(df_final)} 社  /  要確認: {len(df_check)} 社")
+print(f"全候補: {len(df_all)} 社  /  Final7: {len(df_final)} 社  /  要確認: {len(df_check)} 社  /  異常検知: {len(df_anomaly)} 社")
 print("=" * 60)
 print(df_final[["ティッカー", "会社名", "利回り%(3年平均)", "DOE%", "理論利回り%", "実質PBR倍率", "安定性点", "総合点"]].to_string(index=False))
- 
+
 if not df_check.empty:
     print(f"\n⚠️  データ要確認銘柄: {len(df_check)} 社")
     print("→ annual_result.xlsx の「DataCheck_要確認」シートを確認してください")
- 
+
+if not df_anomaly.empty:
+    print(f"\n🔍  異常検知銘柄: {len(df_anomaly)} 社（指標に統計的な乖離あり）")
+    print("→ annual_result.xlsx の「AnomalyReport」シートを確認してください")
+    disp_cols = ["ティッカー", "会社名", "anomaly_score", "anomaly_reason"]
+    disp_cols = [c for c in disp_cols if c in df_anomaly.columns]
+    print(df_anomaly[disp_cols].head(10).to_string(index=False))
+
 print(f"\n結果保存: {ANNUAL_RESULT_FILE}")
 print(f"監視用JSON: {FINAL7_JSON}")
- 
+if EXPORT_FEATURE_IMPORTANCE and os.path.exists(FEATURE_IMPORTANCE_OUT):
+    print(f"特徴量重要度PNG: {FEATURE_IMPORTANCE_OUT}")
+
+anomaly_section = ""
+if not df_anomaly.empty:
+    disp_cols = ["ティッカー", "会社名", "anomaly_score", "anomaly_reason"]
+    disp_cols = [c for c in disp_cols if c in df_anomaly.columns]
+    anomaly_section = (
+        f"\n\n🔍 異常検知銘柄: {len(df_anomaly)} 社\n"
+        f"{df_anomaly[disp_cols].head(10).to_string(index=False)}"
+    )
+
 body = (
     f"【年次選定完了】{today.strftime('%Y年%m月%d日')}\n\n"
-    f"全候補: {len(df_all)} 社 / Final7: {len(df_final)} 社 / 要確認: {len(df_check)} 社\n\n"
+    f"全候補: {len(df_all)} 社 / Final7: {len(df_final)} 社 / 要確認: {len(df_check)} 社 / 異常検知: {len(df_anomaly)} 社\n\n"
     f"{df_final[['ティッカー','会社名','利回り%(3年平均)','DOE%','理論利回り%','実質PBR倍率','総合点']].to_string(index=False)}\n\n"
     + (f"⚠️ データ要確認銘柄あり: {len(df_check)} 社\n"
        f"{df_check[['ティッカー','会社名','品質メモ']].to_string(index=False)}"
        if not df_check.empty else "")
+    + anomaly_section
 )
 send_alert(f"【配当システム】{fiscal_year}年度 年次選定結果", body)
 print("\n完了。")
  
+
+
 
