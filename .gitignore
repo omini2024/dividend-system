@@ -1,10 +1,20 @@
+# Python
 venv/
+.venv/
 __pycache__/
+*.pyc
+
+# データ・出力（output/ 配下は全除外）
 output/
 *.xlsx
 *.png
+*.pdf
+
+# macOS
 .DS_Store
-output/price_cache/
-output/price_cache/
-output/*.png
-output/*.pdf
+
+# バックアップ・ログ
+email_config.py
+monthly_log.txt
+_backup/
+*.ipynb
