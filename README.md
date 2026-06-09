@@ -65,6 +65,14 @@ pip install yfinance pandas openpyxl tqdm
 ### 4. email_config.py の作成（メール通知を使う場合）
 プロジェクトフォルダに `email_config.py` を新規作成して以下を記入：
 
+```python
+SMTP_SERVER  = "smtp.gmail.com"   # Gmailの場合
+SMTP_PORT    = 587
+EMAIL_ADDRESS = "your_address@gmail.com"   # 送信元アドレス
+EMAIL_PASSWORD = "xxxx xxxx xxxx xxxx"     # Gmailアプリパスワード
+TO_EMAIL     = "your_address@gmail.com"    # 送信先（自分宛でOK）
+```
+
 > **Gmailアプリパスワードの取得方法**
 > 1. Googleアカウント → セキュリティ → 2段階認証をONにする
 > 2. 「アプリパスワード」を検索 → 新しいパスワードを生成
@@ -73,20 +81,11 @@ pip install yfinance pandas openpyxl tqdm
 ※ メール通知が不要な場合は `email_config.py` を作らなくてもOK。
 　 その場合はメール送信がスキップされ、コンソールに結果が表示されます。
 
-### 5. 取得時期によるバラツキを解消する為
-直前5営業日の終値を取得。
-　配当性向の３年平均化
-異常値が出た銘柄を別枠に纏める(DataCheck_要確認) 
-### 6. 株式分割及びDOE
-直近3ヶ月以内の株式分割を検出し「要確認」フラグを付与
-安定性スコア計算時に分割逆換算を適用
-総合点を90点→100点満点に変更【C案】
-DOE・理論利回り・実質PBR倍率を算出・出力
 ---
 
 ## 🚀 実行方法
 
-### 年1回（5月ゴールデンウイーク後を推奨）
+### 年1回（4月1日推奨 ※休日の場合は翌営業日）
 ```bash
 python annual_select.py
 ```
@@ -100,13 +99,9 @@ python monthly_monitor.py
 - 7社のみチェックするので **数分で完了**
 - 異常がなければメールは送信されない
 - 異常がある場合のみアラートメールが届く
------
-来年のためのメモ：
 
-4月1日頃: LightプランへアップグレードしてJ-Quantsデータ確認
-4月中: annual_select.py実行
-5月中: キャンセル手続き
------
+---
+
 ## 📊 アラート条件（monthly_monitor.py）
 
 | 条件 | 閾値 | 意味 |
@@ -123,8 +118,9 @@ python monthly_monitor.py
 ## 📅 推奨運用カレンダー
 
 ```
-5月golden week後  → annual_select.py を実行（年次選定・株購入判断）
+4月1日  → annual_select.py を実行（年次選定・株購入判断）
 毎月末  → monthly_monitor.py を実行（月次監視）
 アラート → メールを確認してアクションを検討
-翌年5月1日 → annual_select.py を再実行（リスト更新）
+翌年4月 → annual_select.py を再実行（リスト更新）
 ```
+
