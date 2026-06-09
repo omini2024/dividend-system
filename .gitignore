@@ -4,3 +4,7 @@ output/
 *.xlsx
 *.png
 .DS_Store
+output/price_cache/
+output/price_cache/
+output/*.png
+output/*.pdf
