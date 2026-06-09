@@ -33,6 +33,7 @@ import os
 import json
 import numpy as np
 import jquantsapi
+import math
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.preprocessing import RobustScaler
 import warnings
@@ -556,15 +557,31 @@ for t in tqdm(tickers, desc="スキャン中"):
         # --- 【改良3】ROE・配当性向を複数年平均で計算 ---
         avg_roe, avg_payout = get_multi_year_financials(stock, AVG_YEARS)
  
-        roe    = avg_roe    if avg_roe    is not None else (info.get("returnOnEquity") or 0) * 100
-        payout = avg_payout if avg_payout is not None else (info.get("payoutRatio")   or 0) * 100
+        # NaN/None 両方をガード（NaN is not None → True のため個別チェックが必要）
+        def _safe(val, fallback):
+            if val is None:
+                return fallback
+            try:
+                if math.isnan(float(val)):
+                    return fallback
+            except (TypeError, ValueError):
+                pass
+            return val
+ 
+        roe    = _safe(avg_roe,    (info.get("returnOnEquity") or 0) * 100)
+        payout = _safe(avg_payout, (info.get("payoutRatio")   or 0) * 100)
  
         if roe > 100 or roe < -100:
             quality_notes.append(f"ROE異常値({roe:.1f}%)")
+            data_quality = "要確認"
             roe = 0.0
         if payout > 200 or payout < 0:
             quality_notes.append(f"配当性向異常値({payout:.1f}%)")
+            data_quality = "要確認"
             payout = 0.0
+        if roe == 0.0 and payout == 0.0:
+            quality_notes.append("ROE取得失敗")
+            data_quality = "要確認"
  
         growth = (info.get("revenueGrowth") or 0) * 100
         debt   =  info.get("debtToEquity")  or 0
@@ -778,6 +795,5 @@ body = (
 send_alert(f"【配当システム】{fiscal_year}年度 年次選定結果", body)
 print("\n完了。")
  
-
 
 
