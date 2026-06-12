@@ -211,6 +211,7 @@ annual実行時に `output/feature_importance.png` を生成。
 翌年4月       → annual_select.py を再実行（リスト更新）
 ```
 
+
 ---
 
 ## 🔧 主要設定値一覧
@@ -232,3 +233,18 @@ annual実行時に `output/feature_importance.png` を生成。
 | `DIV_DROP_THRESHOLD` | -0.20 | 配当減アラート閾値（-20%） |
 | `PRICE_DROP_THRESHOLD` | -0.30 | 株価下落アラート閾値（-30%） |
 | `ANOMALY_SCORE_THRESH` | -0.50 | 連続異常判定スコア閾値 |
+
+---
+
+## 🔮 今後の改良候補（TODO）
+
+### 1. 業種別平均指標による相対評価
+**背景：** 現在のIsolation Forestは全銘柄を同一基準で評価するため、業種特有の財務構造（自動車の高負債比率、IT株の高PBR等）が「異常」として検出されやすい。  
+**方針：** J-Quants APIまたは東証公開データから業種別平均（PBR・ROE・負債比率等）を取得し、業種内相対評価に切り替える。
+
+### 2. select_final7()へのexclusion_candidate除外ロジック組み込み
+**背景：** monthly_monitor.pyで2回連続異常検知時にfinal7.jsonへ`exclusion_candidate: true`を付与する仕組みは実装済み。ただし次回annual_select.py実行時の自動除外はまだ未実装。  
+**注意：** 除外は自動判断せず、メール通知と目視確認を経てから実施することを推奨。
+
+### 3. anomaly閾値（ANOMALY_SCORE_THRESH）の再検討
+**方針：** monthly結果を数ヶ月確認後、必要に応じて`monthly_monitor.py`の`ANOMALY_SCORE_THRESH`を調整する。

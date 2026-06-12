@@ -796,3 +796,4 @@ send_alert(f"【配当システム】{fiscal_year}年度 年次選定結果", bo
 print("\n完了。")
  
 
+
