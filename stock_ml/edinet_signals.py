@@ -29,7 +29,7 @@ import requests
 warnings.filterwarnings("ignore")
 
 # ── 設定 ────────────────────────────────────────────────────────────────────
-EDINET_BASE   = "https://disclosure.edinet-api.go.jp/api/v2"
+EDINET_BASE   = "https://api.edinet-fsa.go.jp/api/v2"
 LOOKBACK_DAYS = 90          # 何日分遡るか
 API_SLEEP     = 0.5         # API呼び出し間隔（秒）
 CACHE_DIR     = Path(__file__).parent.parent / "output" / "edinet_cache"

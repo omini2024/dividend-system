@@ -20,12 +20,12 @@ import json
 import warnings
 from pathlib import Path
 
-# EDINET シグナル（オプション）
+# J-Quants シグナル（オプション）
 try:
-    import edinet_signals as edinet
-    _EDINET_AVAILABLE = True
+    import jquants_signals as jquants
+    _JQUANTS_AVAILABLE = True
 except ImportError:
-    _EDINET_AVAILABLE = False
+    _JQUANTS_AVAILABLE = False
 
 import matplotlib
 matplotlib.use("Agg")
@@ -54,7 +54,7 @@ LOOKBACK    = "2y"  # yfinance で取得する期間
 TRAIN_RATIO = 0.70  # 訓練データの割合（時系列分割）
 BATCH_SIZE  = 50    # yf.download のバッチサイズ（銘柄数）
 MIN_ROWS    = 60    # 最低必要サンプル行数
-USE_EDINET  = True  # EDINET 大量保有報告書シグナルを特徴量に追加するか
+USE_JQUANTS = True  # J-Quants 決算・センチメントシグナルを特徴量に追加するか
 
 _ROOT             = Path(__file__).parent.parent  # dividend-system/
 FUNDAMENTALS_FILE = _ROOT / "output" / "annual_result.xlsx"
@@ -242,12 +242,13 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_features(
-    price_df:   pd.DataFrame,
-    fund_row:   pd.Series,
-    ticker:     str,
-    signals_df: pd.DataFrame | None = None,
+    price_df:     pd.DataFrame,
+    fund_row:     pd.Series,
+    ticker:       str,
+    earnings_map: dict | None = None,
+    sentiment_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """テクニカル + ファンダメンタルズ（+ EDINET）特徴量を結合してラベルを付与する。"""
+    """テクニカル + ファンダメンタルズ（+ J-Quants）特徴量を結合してラベルを付与する。"""
     df   = price_df.copy()
     df   = add_technical_features(df)
 
@@ -263,9 +264,9 @@ def build_features(
         if col in fund_row.index:
             df[f"fund_{col}"] = fund_row[col]
 
-    # EDINET 大量保有報告書シグナル
-    if signals_df is not None and not signals_df.empty:
-        df = edinet.add_large_holder_features(df, ticker, signals_df)
+    # J-Quants 決算・センチメントシグナル
+    if earnings_map is not None and sentiment_df is not None:
+        df = jquants.add_jquants_features(df, ticker, earnings_map, sentiment_df)
 
     df["ticker"] = ticker
 
@@ -278,9 +279,10 @@ def build_features(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_dataset(
-    fund_df:    pd.DataFrame,
-    price_map:  dict[str, pd.DataFrame],
-    signals_df: pd.DataFrame | None = None,
+    fund_df:      pd.DataFrame,
+    price_map:    dict[str, pd.DataFrame],
+    earnings_map: dict | None = None,
+    sentiment_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """全銘柄のデータを統合したデータセットと特徴量列リストを返す。"""
     fund_indexed = fund_df.set_index("ティッカー")
@@ -291,7 +293,10 @@ def build_dataset(
         if ticker not in fund_indexed.index:
             skip += 1
             continue
-        feat_df = build_features(price_df, fund_indexed.loc[ticker], ticker, signals_df)
+        feat_df = build_features(
+            price_df, fund_indexed.loc[ticker], ticker,
+            earnings_map, sentiment_df,
+        )
         if len(feat_df) < MIN_ROWS:
             skip += 1
             continue
@@ -641,20 +646,27 @@ def main() -> None:
     price_map = download_prices_batch(tickers)
     print(f"  取得成功: {len(price_map)} 銘柄")
 
-    # 2b. EDINET 大量保有報告書シグナル取得（オプション）
-    signals_df = None
-    if USE_EDINET and _EDINET_AVAILABLE:
-        print("\n[EDINET 大量保有報告書シグナル取得中...]")
+    # 2b. J-Quants 決算・センチメントシグナル取得（オプション）
+    earnings_map = None
+    sentiment_df = None
+    if USE_JQUANTS and _JQUANTS_AVAILABLE:
+        print("\n[J-Quants シグナル取得中...]")
         try:
-            signals_df = edinet.load_or_fetch_signals(tickers)
-            print(f"  取得件数: {len(signals_df)} 件")
+            import re
+            src      = (_ROOT / "annual_select.py").read_text()
+            m        = re.search(r'JQUANTS_API_KEY\s*=\s*["\']([^"\']+)["\']', src)
+            api_key  = m.group(1) if m else ""
+            if api_key:
+                earnings_map, sentiment_df = jquants.load_jquants_signals(tickers, api_key)
+            else:
+                print("  [警告] J-Quants APIキーが見つかりません（スキップ）")
         except Exception as e:
-            print(f"  [警告] EDINET 取得失敗（スキップ）: {e}")
-            signals_df = None
+            print(f"  [警告] J-Quants 取得失敗（スキップ）: {e}")
+            earnings_map = sentiment_df = None
 
     # 3. データセット構築
     print("\n[特徴量構築中...]")
-    dataset, feat_cols = build_dataset(fund_df, price_map, signals_df)
+    dataset, feat_cols = build_dataset(fund_df, price_map, earnings_map, sentiment_df)
 
     # 4. 訓練・評価
     results = train_and_evaluate(dataset, feat_cols)
