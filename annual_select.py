@@ -466,21 +466,19 @@ def export_feature_importance(df: pd.DataFrame) -> None:
 
         importances = pd.Series(rf.feature_importances_, index=use_cols).sort_values()
 
-        # 日本語フォント設定（IPAGothicを優先）
-        jp_fonts = [f.name for f in fm.fontManager.ttflist
-                    if any(k in f.name for k in ["IPAGothic", "Noto", "Hiragino", "Yu Gothic"])]
-        if jp_fonts:
-            plt.rcParams["font.family"] = jp_fonts[0]
-
+        # 日本語フォント設定（IPAGothicをパス直接指定）
+        ipa_path = "/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf"
+        fp = fm.FontProperties(fname=ipa_path)
+        plt.rcParams["font.family"] = "IPAGothic"
         fig, ax = plt.subplots(figsize=(8, 5))
         colors = ["#d9534f" if imp >= importances.quantile(0.67)
                   else "#5bc0de" if imp >= importances.quantile(0.33)
                   else "#aaaaaa" for imp in importances]
         importances.plot(kind="barh", ax=ax, color=colors)
-        ax.set_title(f"特徴量重要度（{fiscal_year}年度）", fontsize=13)
-        ax.set_xlabel("重要度")
+        ax.set_title(f"特徴量重要度（{fiscal_year}年度）", fontsize=13, fontproperties=fp)
+        ax.set_xlabel("重要度", fontproperties=fp)
         ax.axvline(importances.mean(), color="gray", linestyle="--", linewidth=0.8, label="平均")
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=9, prop=fp)
         plt.tight_layout()
         plt.savefig(FEATURE_IMPORTANCE_OUT, dpi=150)
         plt.close()
@@ -496,7 +494,25 @@ def select_final7(df):
     データ品質が「正常」の銘柄のみを対象に、
     総合点→安定性点→利回り点の順でソートし、
     同一業種最大2社の制限を適用して上位7社を返す。
+    exclusion_candidate=trueの銘柄は除外する。
     """
+    # exclusion_candidate除外
+    import json, os
+    _excl = set()
+    _json_path = os.path.join(OUTPUT_DIR, "final7.json")
+    if os.path.exists(_json_path):
+        try:
+            with open(_json_path, "r", encoding="utf-8") as _f:
+                _prev = json.load(_f)
+            for _d in _prev.get("details", []):
+                if _d.get("exclusion_candidate"):
+                    _excl.add(_d["ティッカー"])
+        except Exception:
+            pass
+    if _excl:
+        print(f"⚠️  exclusion_candidate除外: {sorted(_excl)}")
+        df = df[~df["ティッカー"].isin(_excl)].copy()
+
     df_valid  = df[df["データ品質"] == "正常"].copy()
     df_sorted = df_valid.sort_values(
         ["総合点", "安定性点", "利回り点"],
