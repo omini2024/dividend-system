@@ -20,6 +20,13 @@ import json
 import warnings
 from pathlib import Path
 
+# EDINET シグナル（オプション）
+try:
+    import edinet_signals as edinet
+    _EDINET_AVAILABLE = True
+except ImportError:
+    _EDINET_AVAILABLE = False
+
 import matplotlib
 matplotlib.use("Agg")
 import chart_style  # noqa: F401
@@ -47,6 +54,7 @@ LOOKBACK    = "2y"  # yfinance で取得する期間
 TRAIN_RATIO = 0.70  # 訓練データの割合（時系列分割）
 BATCH_SIZE  = 50    # yf.download のバッチサイズ（銘柄数）
 MIN_ROWS    = 60    # 最低必要サンプル行数
+USE_EDINET  = True  # EDINET 大量保有報告書シグナルを特徴量に追加するか
 
 _ROOT             = Path(__file__).parent.parent  # dividend-system/
 FUNDAMENTALS_FILE = _ROOT / "output" / "annual_result.xlsx"
@@ -234,11 +242,12 @@ def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_features(
-    price_df: pd.DataFrame,
-    fund_row:  pd.Series,
-    ticker:    str,
+    price_df:   pd.DataFrame,
+    fund_row:   pd.Series,
+    ticker:     str,
+    signals_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """テクニカル + ファンダメンタルズ特徴量を結合してラベルを付与する。"""
+    """テクニカル + ファンダメンタルズ（+ EDINET）特徴量を結合してラベルを付与する。"""
     df   = price_df.copy()
     df   = add_technical_features(df)
 
@@ -254,6 +263,10 @@ def build_features(
         if col in fund_row.index:
             df[f"fund_{col}"] = fund_row[col]
 
+    # EDINET 大量保有報告書シグナル
+    if signals_df is not None and not signals_df.empty:
+        df = edinet.add_large_holder_features(df, ticker, signals_df)
+
     df["ticker"] = ticker
 
     df.dropna(inplace=True)
@@ -267,6 +280,7 @@ def build_features(
 def build_dataset(
     fund_df:    pd.DataFrame,
     price_map:  dict[str, pd.DataFrame],
+    signals_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """全銘柄のデータを統合したデータセットと特徴量列リストを返す。"""
     fund_indexed = fund_df.set_index("ティッカー")
@@ -277,7 +291,7 @@ def build_dataset(
         if ticker not in fund_indexed.index:
             skip += 1
             continue
-        feat_df = build_features(price_df, fund_indexed.loc[ticker], ticker)
+        feat_df = build_features(price_df, fund_indexed.loc[ticker], ticker, signals_df)
         if len(feat_df) < MIN_ROWS:
             skip += 1
             continue
@@ -627,9 +641,20 @@ def main() -> None:
     price_map = download_prices_batch(tickers)
     print(f"  取得成功: {len(price_map)} 銘柄")
 
+    # 2b. EDINET 大量保有報告書シグナル取得（オプション）
+    signals_df = None
+    if USE_EDINET and _EDINET_AVAILABLE:
+        print("\n[EDINET 大量保有報告書シグナル取得中...]")
+        try:
+            signals_df = edinet.load_or_fetch_signals(tickers)
+            print(f"  取得件数: {len(signals_df)} 件")
+        except Exception as e:
+            print(f"  [警告] EDINET 取得失敗（スキップ）: {e}")
+            signals_df = None
+
     # 3. データセット構築
     print("\n[特徴量構築中...]")
-    dataset, feat_cols = build_dataset(fund_df, price_map)
+    dataset, feat_cols = build_dataset(fund_df, price_map, signals_df)
 
     # 4. 訓練・評価
     results = train_and_evaluate(dataset, feat_cols)
