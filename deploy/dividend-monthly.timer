@@ -1,0 +1,9 @@
+[Unit]
+Description=Trigger dividend monthly monitor near month-end
+
+[Timer]
+OnCalendar=*-*-24..31 18:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

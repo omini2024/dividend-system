@@ -18,3 +18,5 @@ email_config.py
 monthly_log.txt
 _backup/
 *.ipynb
+apply_monthly_patch.py
+reset_exclusion_flags.py

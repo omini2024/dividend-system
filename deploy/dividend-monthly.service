@@ -1,0 +1,11 @@
+[Unit]
+Description=Dividend monthly monitor (last JPX trading day only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=toshiyuki
+WorkingDirectory=/home/toshiyuki/dividend-system
+ExecCondition=/home/toshiyuki/dividend-system/.venv/bin/python3 /home/toshiyuki/dividend-system/check_last_trading_day.py
+ExecStart=/home/toshiyuki/dividend-system/.venv/bin/python3 /home/toshiyuki/dividend-system/monthly_monitor.py
