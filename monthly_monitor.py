@@ -7,7 +7,8 @@
 # 【改良】
 # 追加1: Isolation Forestによる月次異常スコアリング
 #         annualと同じ特徴量 + 株価変化率% + 配当変化率% を使用
-# 追加2: 2回連続anomaly_score≤-0.5でexclusion_candidate=trueをfinal7.jsonに付与
+# 追加2: 2回連続でモデル異常判定(flag=-1)→exclusion_candidate=true を final7.json に付与
+#         （案A: 変化率2列を月次特徴量から除外／固定閾値-0.50は廃止）
 # ==============================
 
 import yfinance as yf
@@ -44,13 +45,14 @@ MONITOR_LOG    = os.path.join(OUTPUT_DIR, "monitor_log.xlsx")
 # ========= アラート閾値 =========
 DIV_DROP_THRESHOLD    = -0.20   # 配当が前年比20%以上減でアラート
 PRICE_DROP_THRESHOLD  = -0.30   # 株価が選定時から30%以上下落でアラート
-ANOMALY_SCORE_THRESH  = -0.50   # 2回連続でこの値以下 → exclusion_candidate
 ANOMALY_FEATURES_BASE = [
     "利回り%(3年平均)", "配当性向%(複数年平均)", "ROE%(複数年平均)",
     "DOE%", "PBR", "理論利回り%", "実質PBR倍率",
     "売上成長率%", "負債比率",
 ]
-ANOMALY_FEATURES_MONTHLY = ANOMALY_FEATURES_BASE + ["株価変化率%", "配当変化率%"]
+# 案A: 変化率2列(株価変化率%/配当変化率%)は背景を0固定にせざるを得ず
+#      選定日からの時間経過でFinal7が全社ドリフト→誤検知の原因。月次異常検知はファンダ指標のみで実施。
+ANOMALY_FEATURES_MONTHLY = list(ANOMALY_FEATURES_BASE)
 
 
 # ========= メール通知 =========
@@ -233,8 +235,6 @@ if monthly_feature_rows:
     if not background_df.empty:
         use_base = [c for c in ANOMALY_FEATURES_BASE if c in background_df.columns]
         bg_global = background_df[use_base].copy().fillna(0)
-        bg_global["株価変化率%"] = 0.0
-        bg_global["配当変化率%"] = 0.0
         combined_global = pd.concat(
             [bg_global, df_monthly[ANOMALY_FEATURES_MONTHLY].fillna(0)],
             ignore_index=False
@@ -279,8 +279,6 @@ if monthly_feature_rows:
             # 業種背景データ + 当該銘柄の月次データを結合
             use_base_s = [c for c in ANOMALY_FEATURES_BASE if c in bg_sector.columns]
             bg_s = bg_sector[use_base_s].copy().fillna(0)
-            bg_s["株価変化率%"] = 0.0
-            bg_s["配当変化率%"] = 0.0
 
             ticker_row = df_monthly.loc[[t]][ANOMALY_FEATURES_MONTHLY].fillna(0)
             combined_s = pd.concat([bg_s, ticker_row], ignore_index=False)
@@ -323,22 +321,24 @@ if os.path.exists(MONITOR_LOG):
     try:
         df_prev_log = pd.read_excel(MONITOR_LOG)
         # 各ティッカーの直近1回分のスコアを取得
-        if "monthly_anomaly_score" in df_prev_log.columns and "確認日" in df_prev_log.columns:
+        if "monthly_anomaly_flag" in df_prev_log.columns and "確認日" in df_prev_log.columns:
             df_prev_log["確認日"] = pd.to_datetime(df_prev_log["確認日"])
-            prev_latest = (
+            prev_latest_flag = (
                 df_prev_log.sort_values("確認日")
                 .groupby("ティッカー")
-                .last()["monthly_anomaly_score"]
+                .last()["monthly_anomaly_flag"]
                 .to_dict()
             )
             for r in log_rows:
                 t = r["ティッカー"]
-                prev_score = prev_latest.get(t, 0.0)
+                prev_flag  = prev_latest_flag.get(t, 1)   # 未知は正常(1)扱い
+                curr_flag  = r.get("monthly_anomaly_flag", 1)
                 curr_score = r.get("monthly_anomaly_score", 0.0)
-                if prev_score <= ANOMALY_SCORE_THRESH and curr_score <= ANOMALY_SCORE_THRESH:
+                # 案A後: モデル自身の外れ値判定(flag==-1)が2回連続 → exclusion_candidate
+                if prev_flag == -1 and curr_flag == -1:
                     exclusion_candidates.append(t)
                     r["問題内容"] = (r.get("問題内容") or "") + \
-                        f" / ⚠️連続異常検知(score:{curr_score:.4f})"
+                        f" / ⚠️連続異常検知(flag=-1×2, score:{curr_score:.4f})"
                     r["ステータス"] = "🔴 要確認"
     except Exception as e:
         print(f"⚠️  前回ログ読み込みエラー: {e}")
